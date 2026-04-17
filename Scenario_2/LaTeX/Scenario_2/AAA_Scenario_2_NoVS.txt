@@ -1,0 +1,16 @@
+\begin{tabular}{lr}
+\toprule
+ & NoVS \\
+solver_sigma &  \\
+\midrule
+differentialEvolution & 9 \\
+ga-0.02 & 1 \\
+es-0.02 & 1 \\
+cmaEs & 0 \\
+es-0.25 & 0 \\
+es-0.5 & 0 \\
+ga-0.25 & 0 \\
+ga-0.5 & 0 \\
+pso & 0 \\
+\bottomrule
+\end{tabular}
