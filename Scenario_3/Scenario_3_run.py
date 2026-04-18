@@ -1,18 +1,31 @@
 """
 Scenario 3 — ANN-based 2D Navigation (paper Section 2.2.3)
 
-Robot: differential-drive, circular, radius=5cm, max speed=10cm/s
-Arena: 1m x 1m, 3 variants (Small / Large / Maze)
-Sensors: m proximity sensors (frontal half) + 2 (distance+angle to target)
-ANN: tanh, input=(m+2), hidden=3(m+2), output=2
-Fitness: mean distance robot–target over 60s simulation (minimize)
-Problems: 3 arenas × 3 sensor configs (m∈{3,5,9}) = 9
-p ∈ {122, 212, 464}  (as reported by paper)
+Faithful to paper:
+  - Arena 1 m × 1 m, 3 variants: Small / Large / Maze
+  - Robot: differential-drive, circular, r = 5 cm, V_max = 10 cm/s
+  - Initial x₀ ∈ U([0.45, 0.55]), y₀ ∈ U([0.80, 0.85]), random heading
+  - Target fixed at (0.50, 0.15)
+  - Δt = 0.1 s, T = 60 s
+  - Fitness = mean Euclidean distance robot–target (MINIMIZE, stochastic)
+  - Sensors: m proximity (frontal half-arc) + distance + angle-to-target
+  - ANN: tanh, input = (m+2), hidden = 3·(m+2), output = 2 (wheel speeds)
+  - 9 problems: 3 arenas × m ∈ {3, 5, 9}  →  p ∈ {122, 212, 464}
 
-Performance notes:
-  - Simulation is pure-Python by necessity (sequential time steps).
-  - --quick mode uses 1 sim seed and reduced sim duration for fast testing.
-  - For full run use --n_evals 10000 --n_rep 30 --cores N.
+Physics details (fixed in this revised version):
+  - Wheel speeds ∈ [-V_max, V_max] (ANN tanh outputs mapped directly) →
+    robot can reverse / rotate in place.
+  - Internal barriers: circle–segment collision prevents tunneling.
+  - Angle-to-target sensor uses full wrapped angle normalised to [-1, 1]
+    (not just sin(Δθ), which was ambiguous front-vs-back).
+  - Stochastic fitness: each fitness call uses a NEW random init (paper spec).
+
+CLI:
+  --quick    : smoke test (2 reps, 300 evals, 10 s sim).
+  --n_evals  : eval budget (default 10 000).
+  --n_rep    : repeats per (EA, problem) (default 30).
+  --cores    : parallel workers (default cpu_count-1).
+  --problems : subset like ea.p.n.Small-3.
 """
 
 import argparse
@@ -33,11 +46,14 @@ warnings.filterwarnings("ignore")
 # ============================================================
 # CONFIG (paper defaults)
 # ============================================================
-N_EVALS_DEFAULT  = 10_000
-N_REP_DEFAULT    = 30
-N_CORES_DEFAULT  = max(1, cpu_count() - 1)
-N_SIM_SEEDS_FULL = 3   # avg over 3 random inits (reduces stochastic noise)
-N_SIM_SEEDS_QUICK = 1  # for smoke tests
+N_EVALS_DEFAULT   = 10_000
+N_REP_DEFAULT     = 30
+N_CORES_DEFAULT   = max(1, cpu_count() - 1)
+# Paper spec: fitness is stochastic — one episode per eval with random init.
+# We keep the init seed DETERMINISTIC per (EA-seed, eval-counter) for
+# reproducibility while preserving stochasticity across the optimisation.
+N_SIM_SEEDS_FULL  = 1   # 1 episode per fitness call (paper)
+N_SIM_SEEDS_QUICK = 1   # same for smoke test
 
 SOLVER_NAME_MAP = {
     "CMA-ES":  "cmaEs",
@@ -272,21 +288,31 @@ def _ray_seg_dist(ox: float, oy: float, angle: float,
     return max_r
 
 
+_WALLS = [
+    (0.0, 0.0, ARENA_W, 0.0),
+    (ARENA_W, 0.0, ARENA_W, ARENA_H),
+    (ARENA_W, ARENA_H, 0.0, ARENA_H),
+    (0.0, ARENA_H, 0.0, 0.0),
+]
+
+
 def _proximity_reading(ox: float, oy: float, angle: float,
                        barriers: list, max_r: float) -> float:
     """Returns 1 when nothing in range, 0 on direct contact, interpolated otherwise."""
     d = max_r
     for seg in barriers:
         d = min(d, _ray_seg_dist(ox, oy, angle, *seg, max_r))
-    # wall boundaries (4 walls)
-    for wall in [
-        (0.0, 0.0, ARENA_W, 0.0),
-        (ARENA_W, 0.0, ARENA_W, ARENA_H),
-        (ARENA_W, ARENA_H, 0.0, ARENA_H),
-        (0.0, ARENA_H, 0.0, 0.0),
-    ]:
+    for wall in _WALLS:
         d = min(d, _ray_seg_dist(ox, oy, angle, *wall, max_r))
     return d / max_r          # 1 = nothing in range, 0 = contact
+
+
+def _min_dist_to_obstacles(px: float, py: float, barriers: list) -> float:
+    """Minimum distance from point (px, py) to any barrier segment."""
+    d = float("inf")
+    for seg in barriers:
+        d = min(d, _seg_dist(px, py, *seg))
+    return d
 
 
 def _ann_forward(theta: np.ndarray, inputs: np.ndarray,
@@ -355,26 +381,39 @@ def simulate_navigation(theta: np.ndarray, m: int, arena_name: str,
         for j, local_a in enumerate(sensor_angles_local):
             inputs[j] = _proximity_reading(x, y, heading + local_a, barriers, SENSOR_R)
 
-        # Distance/angle to target
+        # Distance + angle to target (2 extra sensors, paper spec)
         dx_t   = TARGET[0] - x
         dy_t   = TARGET[1] - y
         dist_t = math.hypot(dx_t, dy_t)
-        inputs[m]     = min(dist_t, SENSOR_R) / SENSOR_R
-        inputs[m + 1] = math.sin(math.atan2(dy_t, dx_t) - heading)
+        inputs[m] = min(dist_t, SENSOR_R) / SENSOR_R
+        # Wrap angle to [-pi, pi] and normalise to [-1, 1]
+        a_rel = math.atan2(dy_t, dx_t) - heading
+        a_rel = (a_rel + math.pi) % (2.0 * math.pi) - math.pi
+        inputs[m + 1] = a_rel / math.pi
 
         # ANN forward (inlined)
         h   = np.tanh(inputs @ W1 + b1)
         out = np.tanh(h @ W2 + b2)
 
-        # Differential drive: tanh ∈ [-1,1] → velocity ∈ [0, V_MAX]
-        v_l = ((out[0] + 1.0) * 0.5) * V_MAX
-        v_r = ((out[1] + 1.0) * 0.5) * V_MAX
+        # Differential drive: ANN outputs ∈ [-1,1] mapped to wheel speeds
+        # ∈ [-V_MAX, V_MAX] (allows reverse/rotate-in-place).
+        v_l = out[0] * V_MAX
+        v_r = out[1] * V_MAX
         v     = (v_l + v_r) * 0.5
         omega = (v_r - v_l) / (2.0 * R_ROBOT)
 
         heading += omega * DT
-        x = max(R_ROBOT, min(ARENA_W - R_ROBOT, x + v * math.cos(heading) * DT))
-        y = max(R_ROBOT, min(ARENA_H - R_ROBOT, y + v * math.sin(heading) * DT))
+        new_x = x + v * math.cos(heading) * DT
+        new_y = y + v * math.sin(heading) * DT
+
+        # Wall collision (clamp into arena, accounting for robot radius)
+        new_x = max(R_ROBOT, min(ARENA_W - R_ROBOT, new_x))
+        new_y = max(R_ROBOT, min(ARENA_H - R_ROBOT, new_y))
+
+        # Internal barrier collision: if moving into a barrier, stay put.
+        if _min_dist_to_obstacles(new_x, new_y, barriers) >= R_ROBOT:
+            x, y = new_x, new_y
+        # else: blocked → position unchanged this step (robot still rotates)
 
         total_dist += math.hypot(x - TARGET[0], y - TARGET[1])
 
@@ -419,12 +458,17 @@ def _worker(args):
     arena = spec.arena
     m_val = spec.m
 
-    sim_rngs_base = seed * 100_000  # deterministic per EA-seed
+    # Paper: fitness is stochastic. We give every fitness call a NEW init via
+    # a monotonically increasing counter mixed with the EA-seed, so each run
+    # is both reproducible AND sees a different episode per evaluation.
+    eval_counter = {"n": 0}
+    seed_offset  = int(seed) * 10_000_000
 
     def fitness_fn(theta: np.ndarray) -> float:
         total = 0.0
-        for k in range(n_sim):
-            rng_sim = np.random.default_rng(sim_rngs_base + k)
+        for _ in range(n_sim):
+            eval_counter["n"] += 1
+            rng_sim = np.random.default_rng(seed_offset + eval_counter["n"])
             total  += simulate_navigation(theta, m_val, arena, rng_sim, t_sim)
         return total / n_sim
 
@@ -511,7 +555,9 @@ def main():
         ctx = get_context("spawn")
         with ctx.Pool(processes=args.cores) as pool:
             for res in tqdm(
-                pool.imap_unordered(_worker, tasks, chunksize=4),
+                # chunksize=1 to avoid long stalls at 0%: with chunksize>1,
+                # a worker must finish the whole chunk before yielding any result.
+                pool.imap_unordered(_worker, tasks, chunksize=1),
                 total=len(tasks),
             ):
                 all_rows.extend(res)
