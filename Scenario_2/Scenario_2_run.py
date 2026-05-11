@@ -302,6 +302,8 @@ def run_ga(fitness_fn, dim, seed, sigma: float, n_evals: int):
 UCI_CONCRETE_XLS_URL = "https://archive.ics.uci.edu/ml/machine-learning-databases/concrete/compressive/Concrete_Data.xls"
 UCI_ENERGY_ZIP_URL = "https://archive.ics.uci.edu/static/public/242/energy+efficiency.zip"
 UCI_WINE_WHITE_URL = "https://archive.ics.uci.edu/ml/machine-learning-databases/wine-quality/winequality-white.csv"
+UCI_ABALONE_URL = "https://archive.ics.uci.edu/ml/machine-learning-databases/abalone/abalone.data"
+UCI_AUTO_MPG_URL = "https://archive.ics.uci.edu/ml/machine-learning-databases/auto-mpg/auto-mpg.data"
 
 
 def _download_if_needed(url: str, dst: Path) -> Path:
@@ -376,6 +378,55 @@ def _load_wine(data_dir: Path, n_target: int = 3919, seed: int = 42) -> Tuple[np
     return X, y
 
 
+def _load_abalone(data_dir: Path) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Abalone dataset (UCI ID 1).
+    4177 mẫu, target = Rings (tuổi bào ngư).
+    Cột Sex (M/F/I) → one-hot encode → m = 10 features.
+    """
+    raw_path = _download_if_needed(UCI_ABALONE_URL, data_dir / "raw" / "abalone.data")
+
+    col_names = ["Sex", "Length", "Diameter", "Height",
+                 "Whole weight", "Shucked weight",
+                 "Viscera weight", "Shell weight", "Rings"]
+    df = pd.read_csv(raw_path, header=None, names=col_names)
+
+    # One-hot encode cột Sex (M, F, I) → 3 cột binary
+    sex_dummies = pd.get_dummies(df["Sex"], prefix="Sex")
+    df = df.drop(columns=["Sex"])
+    df = pd.concat([sex_dummies.astype(np.float64), df], axis=1)
+
+    X = df.drop(columns=["Rings"]).to_numpy(dtype=np.float64)  # shape (4177, 10)
+    y = df["Rings"].to_numpy(dtype=np.float64)
+    return X, y
+
+
+def _load_auto_mpg(data_dir: Path) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Auto MPG dataset (UCI ID 9).
+    392 mẫu sau khi drop missing, target = mpg.
+    m = 7 features: cylinders, displacement, horsepower, weight,
+                    acceleration, model_year, origin.
+    Bỏ cột car_name (text).
+    """
+    raw_path = _download_if_needed(UCI_AUTO_MPG_URL, data_dir / "raw" / "auto-mpg.data")
+
+    col_names = ["mpg", "cylinders", "displacement", "horsepower",
+                 "weight", "acceleration", "model_year", "origin", "car_name"]
+    df = pd.read_csv(raw_path, header=None, names=col_names,
+                     sep=r"\s+", na_values="?")
+
+    # Bỏ cột car_name (không phải feature số)
+    df = df.drop(columns=["car_name"])
+
+    # Xử lý missing: drop rows có NaN (~6 dòng ở cột horsepower)
+    df = df.dropna().reset_index(drop=True)
+
+    X = df.drop(columns=["mpg"]).to_numpy(dtype=np.float64)  # shape (392, 7)
+    y = df["mpg"].to_numpy(dtype=np.float64)
+    return X, y
+
+
 def prepare_datasets(data_dir: Path) -> Dict[str, Dict[str, np.ndarray]]:
     cache_dir = data_dir / "preprocessed"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -386,6 +437,8 @@ def prepare_datasets(data_dir: Path) -> Dict[str, Dict[str, np.ndarray]]:
         ("Concrete", lambda: _load_concrete(data_dir)),
         ("Energy", lambda: _load_energy(data_dir)),
         ("Wine", lambda: _load_wine(data_dir)),
+        ("Abalone", lambda: _load_abalone(data_dir)),
+        ("AutoMPG", lambda: _load_auto_mpg(data_dir)),
     ]:
         cache_path = cache_dir / f"{key}.npz"
         if cache_path.exists():
@@ -456,7 +509,7 @@ def _init_worker(preprocessed_dir: str):
     global _GLOBAL_DATA
     pre_dir = Path(preprocessed_dir)
     _GLOBAL_DATA = {}
-    for key in ["Concrete", "Energy", "Wine"]:
+    for key in ["Concrete", "Energy", "Wine", "Abalone", "AutoMPG"]:
         npz = np.load(pre_dir / f"{key}.npz")
         _GLOBAL_DATA[key] = {"X": npz["X"], "y": npz["y"]}
 
@@ -511,7 +564,7 @@ def _worker(args):
 # ============================================================
 def build_problem_specs() -> List[ProblemSpec]:
     specs: List[ProblemSpec] = []
-    for ds in ["Concrete", "Energy", "Wine"]:
+    for ds in ["Concrete", "Energy", "Wine", "Abalone", "AutoMPG"]:
         for rho_h in [1, 2, 3]:
             specs.append(ProblemSpec(dataset=ds, rho_h=rho_h, problem_name=f"ea.p.r.{ds}-{rho_h}"))
     return specs
