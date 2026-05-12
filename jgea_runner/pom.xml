@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+         http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>ea.comparison</groupId>
+  <artifactId>jgea-runner</artifactId>
+  <version>1.0</version>
+  <packaging>jar</packaging>
+  <name>EA Comparison — JGEA Runner</name>
+  <description>
+    Re-implementation of El Saliby et al. 2024 using JGEA framework.
+    Scenarios: S1 (Synthetic Benchmarks), S2 (ANN Regression).
+  </description>
+
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <java.version>26</java.version>
+    <jgea.version>2.8.1</jgea.version>
+  </properties>
+
+  <dependencies>
+    <!-- JGEA core: Problem, Solver, IterativeSolver, Listener, Factory, Selector -->
+    <dependency>
+      <groupId>io.github.ericmedvet</groupId>
+      <artifactId>jgea.core</artifactId>
+      <version>${jgea.version}</version>
+    </dependency>
+
+    <!-- JGEA problem: SyntheticBenchmarks (Sphere, Ackley, Rastrigin, ...) -->
+    <dependency>
+      <groupId>io.github.ericmedvet</groupId>
+      <artifactId>jgea.problem</artifactId>
+      <version>${jgea.version}</version>
+    </dependency>
+
+    <!-- Apache Commons CSV: xuất kết quả CSV tương thích với Python -->
+    <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-csv</artifactId>
+      <version>1.12.0</version>
+    </dependency>
+
+    <!-- Apache Commons Math3: bổ sung PSO nếu cần -->
+    <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-math3</artifactId>
+      <version>3.6.1</version>
+    </dependency>
+
+    <!-- SLF4J simple logging (JGEA dùng slf4j) -->
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-simple</artifactId>
+      <version>2.0.16</version>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!-- Compiler plugin: target Java 21 -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.14.0</version>
+        <configuration>
+          <source>${java.version}</source>
+          <target>${java.version}</target>
+          <release>26</release>
+        </configuration>
+      </plugin>
+
+      <!-- Assembly plugin: fat JAR với tất cả dependencies -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-assembly-plugin</artifactId>
+        <version>3.7.1</version>
+        <configuration>
+          <descriptorRefs>
+            <descriptorRef>jar-with-dependencies</descriptorRef>
+          </descriptorRefs>
+          <archive>
+            <manifest>
+              <mainClass>ea.comparison.Main</mainClass>
+            </manifest>
+            <manifestEntries>
+              <Add-Opens>java.base/java.util=ALL-UNNAMED</Add-Opens>
+            </manifestEntries>
+          </archive>
+        </configuration>
+        <executions>
+          <execution>
+            <id>make-assembly</id>
+            <phase>package</phase>
+            <goals>
+              <goal>single</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
